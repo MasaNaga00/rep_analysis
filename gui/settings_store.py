@@ -48,6 +48,7 @@ class AppSettings:
     dify_api_base: str = "https://api.dify.ai/v1"
     dify_api_key_schema: str = ""
     dify_api_key_tagging: str = ""
+    dify_ca_cert_path: str = "certs/dify_ca.pem"  # CA証明書(必須)
     
     # MS SQL Server
     mssql_server: str = ""
@@ -109,6 +110,7 @@ class AppSettings:
         config.DIFY_API_BASE = self.dify_api_base
         config.DIFY_API_KEY_SCHEMA = self.dify_api_key_schema
         config.DIFY_API_KEY_TAGGING = self.dify_api_key_tagging
+        config.DIFY_CA_CERT_PATH = self.dify_ca_cert_path
         
         config.MSSQL_SERVER = self.mssql_server
         config.MSSQL_DATABASE = self.mssql_database
