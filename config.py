@@ -19,6 +19,11 @@ DIFY_API_BASE = os.getenv("DIFY_API_BASE", "https://api.dify.ai/v1")
 DIFY_API_KEY_SCHEMA = os.getenv("DIFY_API_KEY_SCHEMA", "")  # 1回目ワークフロー用
 DIFY_API_KEY_TAGGING = os.getenv("DIFY_API_KEY_TAGGING", "")  # 2回目ワークフロー用
 
+# Dify接続に使用するCA証明書ファイル(必須)
+# 社内Difyへの接続時、社内CAで署名された証明書を検証するために必要。
+# 相対パスは ①実行ファイル/プロジェクトルート → ②カレントディレクトリ の順で探索。
+DIFY_CA_CERT_PATH = os.getenv("DIFY_CA_CERT_PATH", "certs/dify_ca.pem")
+
 
 # === MS SQL Server ===
 # ODBC Driverを事前にインストールしておく

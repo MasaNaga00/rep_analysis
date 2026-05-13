@@ -4,10 +4,14 @@ dify_client.py - Dify APIクライアント
 - 1回目（スキーマ生成）：同期で1回
 - 2回目（タグ付け）：非同期並列でバッチ処理
 - リトライ・JSON破損リカバリ付き
+- CA証明書を指定したHTTPS接続（社内Dify対応）
 """
 import asyncio
 import json
 import re
+import ssl
+import sys
+from pathlib import Path
 from typing import Optional
 import aiohttp
 import requests
@@ -25,6 +29,101 @@ class DifyError(Exception):
 
 class DifyJSONParseError(DifyError):
     """JSON解析失敗"""
+
+
+class DifyCertificateError(DifyError):
+    """CA証明書ファイルが見つからない・読み込めない"""
+
+
+# ---------- CA証明書の解決 ----------
+
+def _get_app_root() -> Path:
+    """
+    アプリのルートディレクトリを返す。
+    
+    - 通常実行: このファイル（dify_client.py）のあるディレクトリ
+    - cx_Freeze 等で凍結された exe: 実行ファイルのあるディレクトリ
+    """
+    if getattr(sys, "frozen", False):
+        # cx_Freeze / PyInstaller 等の凍結環境
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent
+
+
+def resolve_ca_cert_path(configured_path: Optional[str] = None) -> Path:
+    """
+    CA証明書ファイルのパスを解決して返す。
+    
+    探索順:
+        1. 絶対パスならそのまま使用
+        2. 相対パスなら ①アプリルート → ②カレントディレクトリ の順
+    
+    Args:
+        configured_path: 設定された証明書パス（省略時は config.DIFY_CA_CERT_PATH）
+    
+    Returns:
+        証明書ファイルの絶対パス
+    
+    Raises:
+        DifyCertificateError: ファイルが見つからない
+    """
+    # 引数指定があれば優先、なければ config を使用
+    # 空文字は「未設定」として扱う(GUI でクリアされたケース等)
+    path_str = configured_path if configured_path is not None else config.DIFY_CA_CERT_PATH
+    if not path_str:
+        raise DifyCertificateError(
+            "CA証明書パスが設定されていません。"
+            "config.DIFY_CA_CERT_PATH または環境変数 DIFY_CA_CERT_PATH を確認してください。"
+        )
+    
+    path = Path(path_str)
+    
+    if path.is_absolute():
+        if not path.exists():
+            raise DifyCertificateError(
+                f"CA証明書ファイルが存在しません: {path}"
+            )
+        return path
+    
+    # 相対パスの場合は探索(重複は除去)
+    seen = set()
+    candidates = []
+    for base in [_get_app_root(), Path.cwd()]:
+        candidate = (base / path).resolve()
+        if candidate not in seen:
+            seen.add(candidate)
+            candidates.append(candidate)
+    
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    
+    raise DifyCertificateError(
+        f"CA証明書ファイル '{path_str}' が見つかりません。\n"
+        f"以下を確認してください:\n"
+        f"  探索した場所:\n"
+        + "\n".join(f"    - {c}" for c in candidates)
+        + f"\n  config.DIFY_CA_CERT_PATH = '{path_str}'"
+    )
+
+
+def _build_ssl_context(ca_cert_path: Optional[Path] = None) -> ssl.SSLContext:
+    """
+    aiohttp 用の SSLContext を構築する。
+    
+    Args:
+        ca_cert_path: CA証明書パス（省略時は resolve_ca_cert_path を使用）
+    """
+    if ca_cert_path is None:
+        ca_cert_path = resolve_ca_cert_path()
+    
+    try:
+        ctx = ssl.create_default_context(cafile=str(ca_cert_path))
+    except (ssl.SSLError, OSError) as e:
+        raise DifyCertificateError(
+            f"CA証明書ファイルの読み込みに失敗しました: {ca_cert_path}\n  エラー: {e}"
+        )
+    return ctx
 
 
 # ---------- ユーティリティ ----------
@@ -99,7 +198,14 @@ def generate_tag_schema(
         "user": user_id,
     }
     
-    resp = requests.post(url, headers=headers, json=payload, timeout=config.REQUEST_TIMEOUT)
+    # CA証明書を指定してHTTPS接続
+    ca_cert = resolve_ca_cert_path()
+    
+    resp = requests.post(
+        url, headers=headers, json=payload,
+        timeout=config.REQUEST_TIMEOUT,
+        verify=str(ca_cert),
+    )
     resp.raise_for_status()
     data = resp.json()
     
@@ -217,7 +323,11 @@ async def tag_records_batch(
     """
     semaphore = asyncio.Semaphore(config.MAX_CONCURRENT)
     
-    async with aiohttp.ClientSession() as session:
+    # CA証明書を指定したSSLコンテキストでaiohttpを初期化
+    ssl_ctx = _build_ssl_context()
+    connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+    
+    async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [
             _call_dify_tagging(
                 session, semaphore, tag_schema, inquiry_summary,
